@@ -20,6 +20,8 @@ class ViewController: NSViewController {
     private var captureSession: AVCaptureSession?
     
     private var activeDevice: AVCaptureDevice?
+    private var activeAudioDevice: AVCaptureDevice?
+    private var audioOutput: AVCaptureAudioPreviewOutput?
     
     private var isViewVisible = false
 
@@ -27,7 +29,7 @@ class ViewController: NSViewController {
         
     override func viewDidLoad() {
         super.viewDidLoad()
-
+        
         let gesture = NSClickGestureRecognizer(target: self, action: #selector(didClickOnView))
         view.addGestureRecognizer(gesture)
 
@@ -108,6 +110,36 @@ class ViewController: NSViewController {
             menu.addItem(withTitle: "No Available Source", action: nil, keyEquivalent: "")
         }
         
+        if let activeDevice = activeDevice {
+            let audioDiscoverySession = AVCaptureDevice.DiscoverySession(
+                deviceTypes: [
+                    .builtInMicrophone,
+                    .externalUnknown
+                ],
+                mediaType: .audio,
+                position: .unspecified
+            )
+            
+            let audioTitleItem = NSMenuItem(title: "Audio", action: nil, keyEquivalent: "")
+            menu.addItem(audioTitleItem)
+            
+            if activeDevice.hasMediaType(.muxed) {
+                let item = NSMenuItem(title: activeDevice.localizedName, action: nil, keyEquivalent: "")
+                item.indentationLevel = 1
+                item.representedObject = nil
+                item.state = .on
+                menu.addItem(item)
+            } else {
+                for audioDevice in audioDiscoverySession.devices {
+                    let item = NSMenuItem(title: audioDevice.localizedName, action: #selector(handleAudioDeviceSelect(_:)), keyEquivalent: "")
+                    item.indentationLevel = 1
+                    item.representedObject = audioDevice
+                    item.state = activeAudioDevice == audioDevice ? .on : .off
+                    menu.addItem(item)
+                }
+            }
+        }
+        
         let videoFormats = activeDevice?.formats.filter { $0.mediaType == .video } ?? []
         if !videoFormats.isEmpty {
             menu.addItem(NSMenuItem.separator())
@@ -181,6 +213,17 @@ class ViewController: NSViewController {
     }
     
     @objc
+    private func handleAudioDeviceSelect(_ sender: NSMenuItem) {
+        guard let device = sender.representedObject as? AVCaptureDevice,
+              let activeDevice = activeDevice,
+              activeAudioDevice != device else {
+            return
+        }
+        
+        configureInput(activeDevice, audioDevice: device)
+    }
+    
+    @objc
     private func handleVideoPresetSelect(_ sender: NSMenuItem) {
         guard let preset = sender.representedObject as? AVCaptureSession.Preset else {
             return
@@ -210,7 +253,7 @@ class ViewController: NSViewController {
     @objc
     private func handlePortFormatDescriptionDidChangeNotification(_ notification: NSNotification) {
         if let captureSession = captureSession, let port = notification.object as? AVCaptureInput.Port {
-            guard captureSession.inputs.contains(where: { $0.ports.contains(port) }) else {
+            guard captureSession.inputs.contains(where: { $0.ports.contains(port) }), (port.mediaType == .video || port.mediaType == .muxed) else {
                 return
             }
             
@@ -317,6 +360,8 @@ class ViewController: NSViewController {
     
     private func teardown() {
         self.activeDevice = nil
+        self.activeAudioDevice = nil
+        self.audioOutput = nil
         self.labelEffectView.isHidden = true
         self.captureSession?.stopRunning()
         self.captureSession = nil
@@ -343,10 +388,12 @@ class ViewController: NSViewController {
         window.standardWindowButton(.zoomButton)?.isHidden = isHidden
     }
     
-    private func configureInput(_ device: AVCaptureDevice) {
+    private func configureInput(_ device: AVCaptureDevice, audioDevice: AVCaptureDevice? = nil) {
         if activeDevice != nil {
             captureSession?.stopRunning()
         }
+        activeAudioDevice = nil
+        
         let captureSession = AVCaptureSession()
         activeDevice = device
         
@@ -355,29 +402,105 @@ class ViewController: NSViewController {
         } catch {
             NSLog("Unable to lock device")
         }
-        print(device.manufacturer)
-        print(device.localizedName)
-        print(device.modelID)
-        
+
         deviceLabel.stringValue = device.localizedName
         labelEffectView.isHidden = false
         
+        let previewLayer = AVCaptureVideoPreviewLayer(sessionWithNoConnection: captureSession)
+        view.layer = previewLayer
+        self.previewLayer = previewLayer
+                
         captureSession.beginConfiguration()
         guard let videoInputDevice = try? AVCaptureDeviceInput(device: device),
             captureSession.canAddInput(videoInputDevice) else {
                 NSLog("Can't add it.")
+                captureSession.commitConfiguration()
                 return
         }
         
-        captureSession.addInput(videoInputDevice)
+        captureSession.addInputWithNoConnections(videoInputDevice)
+        if let videoPort = videoInputDevice.ports.first(where: { $0.mediaType == .video || $0.mediaType == .muxed }) {
+            captureSession.addConnection(AVCaptureConnection(inputPort: videoPort, videoPreviewLayer: previewLayer))
+        }
+        
+        if let audioPort = videoInputDevice.ports.first(where: { $0.mediaType == .audio || $0.mediaType == .muxed }) {
+            activeAudioDevice = nil
+
+            let audioOutput = AVCaptureAudioPreviewOutput()
+            audioOutput.outputDeviceUniqueID = defaultAudioDeviceUniqueID()
+            audioOutput.volume = 1.0
+            self.audioOutput = audioOutput
+
+            captureSession.addOutputWithNoConnections(audioOutput)
+            captureSession.addConnection(AVCaptureConnection(inputPorts: [audioPort], output: audioOutput))
+        } else if let audioDevice = audioDevice,
+           let audioInputDevice = try? AVCaptureDeviceInput(device: audioDevice),
+           captureSession.canAddInput(audioInputDevice) {
+            activeAudioDevice = audioDevice
+
+            let audioOutput = AVCaptureAudioPreviewOutput()
+            audioOutput.outputDeviceUniqueID = defaultAudioDeviceUniqueID()
+            audioOutput.volume = 1.0
+            self.audioOutput = audioOutput
+            
+            captureSession.addInputWithNoConnections(audioInputDevice)
+            captureSession.addOutputWithNoConnections(audioOutput)
+            
+            captureSession.addConnection(AVCaptureConnection(inputPorts: audioInputDevice.ports, output: audioOutput))
+        } else {
+            self.audioOutput = nil
+        }
+        
         captureSession.commitConfiguration()
-        
-        previewLayer = AVCaptureVideoPreviewLayer(session: captureSession)
-        view.layer = previewLayer
-        
+                
         captureSession.startRunning()
         device.unlockForConfiguration()
         activityIndicator.stopAnimation(self)
         self.captureSession = captureSession
+    }
+}
+
+extension ViewController {
+    
+    private func defaultAudioDeviceUniqueID() -> String? {
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var deviceID = AudioObjectID()
+        var dataSize = UInt32(MemoryLayout<AudioObjectID>.size)
+        
+        var err = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &propertyAddress,
+            0,
+            nil,
+            &dataSize,
+            &deviceID
+        )
+        
+        guard err == 0 else {
+            return nil
+        }
+        
+        var name: CFString?
+        dataSize = UInt32(MemoryLayout<CFString?>.size)
+        propertyAddress.mSelector = kAudioDevicePropertyDeviceUID
+        
+        err = AudioObjectGetPropertyData(
+            deviceID,
+            &propertyAddress,
+            0,
+            nil,
+            &dataSize,
+            &name
+        )
+        
+        guard err == 0 else {
+            return nil
+        }
+        
+        return name as String?
     }
 }
