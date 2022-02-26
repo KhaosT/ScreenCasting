@@ -71,7 +71,25 @@ class ViewController: NSViewController {
     }
     
     override func rightMouseDown(with event: NSEvent) {
-        let devices = AVCaptureDevice.devices(for: .muxed) + AVCaptureDevice.devices(for: .video)
+        let cameraSession = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [
+                .builtInWideAngleCamera,
+                .externalUnknown,
+            ],
+            mediaType: .video,
+            position: .unspecified
+        )
+        
+        let screenCastSession = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [
+                .builtInWideAngleCamera,
+                .externalUnknown,
+            ],
+            mediaType: .muxed,
+            position: .unspecified
+        )
+        
+        let devices = screenCastSession.devices + cameraSession.devices
         
         let menu = NSMenu(title: "Settings")
         
@@ -88,6 +106,32 @@ class ViewController: NSViewController {
         
         if devices.isEmpty {
             menu.addItem(withTitle: "No Available Source", action: nil, keyEquivalent: "")
+        }
+        
+        let videoFormats = activeDevice?.formats.filter { $0.mediaType == .video } ?? []
+        if !videoFormats.isEmpty {
+            menu.addItem(NSMenuItem.separator())
+            let formatTitleItem = NSMenuItem(title: "Format", action: nil, keyEquivalent: "")
+            menu.addItem(formatTitleItem)
+            
+            for format in videoFormats {
+                let frameRates = format.videoSupportedFrameRateRanges
+                    .map { String(format: "%.2f fps", $0.maxFrameRate) }
+                    .joined(separator: ",")
+                
+                let dimensions = format.formatDescription.dimensions
+                let resolution = "\(dimensions.width)x\(dimensions.height)"
+                
+                let item = NSMenuItem(
+                    title: "\(resolution) (\(frameRates)) - \(format.formatDescription.mediaSubType)",
+                    action: #selector(handleVideoFormatSelect(_:)),
+                    keyEquivalent: ""
+                )
+                item.indentationLevel = 1
+                item.representedObject = format
+                item.state = (activeDevice?.activeFormat == format) ? .on : .off
+                menu.addItem(item)
+            }
         }
         
         if let captureSession = captureSession {
@@ -144,6 +188,24 @@ class ViewController: NSViewController {
         
         captureSession?.sessionPreset = preset
     }
+    
+    @objc
+    private func handleVideoFormatSelect(_ sender: NSMenuItem) {
+        guard let activeDevice = activeDevice,
+              let format = sender.representedObject as? AVCaptureDevice.Format else {
+            return
+        }
+        
+        do {
+            try activeDevice.lockForConfiguration()
+            
+            activeDevice.activeFormat = format
+            
+            activeDevice.unlockForConfiguration()
+        } catch {
+            NSLog("Failed to update device, error: \(error)")
+        }
+    }
 
     @objc
     private func handlePortFormatDescriptionDidChangeNotification(_ notification: NSNotification) {
@@ -152,10 +214,23 @@ class ViewController: NSViewController {
                 return
             }
             
-            if let formatDescription = port.formatDescription {
+            if let formatDescription = port.formatDescription,
+               let window = self.view.window,
+               let screen = window.screen {
+                
                 let dimensions = CMVideoFormatDescriptionGetDimensions(formatDescription)
-                self.view.window?.aspectRatio = NSSize(width: CGFloat(dimensions.width)/CGFloat(dimensions.height), height: 1)
-                self.view.window?.setContentSize(NSSize(width: Int(dimensions.width), height: Int(dimensions.height)))
+                
+                window.aspectRatio = NSSize(
+                    width: CGFloat(dimensions.width)/CGFloat(dimensions.height),
+                    height: 1
+                )
+                
+                window.setContentSize(
+                    NSSize(
+                        width: Int(CGFloat(dimensions.width) / screen.backingScaleFactor),
+                        height: Int(CGFloat(dimensions.height) / screen.backingScaleFactor)
+                    )
+                )
             }
         }
     }
@@ -197,7 +272,9 @@ class ViewController: NSViewController {
             return
         }
         
-        if activeDevice == nil, let device = AVCaptureDevice.devices(for: .muxed).first {
+        if activeDevice == nil,
+           let device = notification.object as? AVCaptureDevice,
+           device.hasMediaType(.muxed) {
             self.configureInput(device)
         }
     }
@@ -218,7 +295,16 @@ class ViewController: NSViewController {
         isViewVisible = true
         activityIndicator.startAnimation(self)
         
-        if let device = AVCaptureDevice.devices(for: .muxed).first {
+        let screenCastSession = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [
+                .builtInWideAngleCamera,
+                .externalUnknown,
+            ],
+            mediaType: .muxed,
+            position: .unspecified
+        )
+        
+        if let device = screenCastSession.devices.first {
             self.configureInput(device)
         }
     }
