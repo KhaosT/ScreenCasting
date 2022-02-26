@@ -111,6 +111,8 @@ class ViewController: NSViewController {
         }
         
         if let activeDevice = activeDevice {
+            menu.addItem(NSMenuItem.separator())
+
             let audioDiscoverySession = AVCaptureDevice.DiscoverySession(
                 deviceTypes: [
                     .builtInMicrophone,
@@ -433,22 +435,47 @@ class ViewController: NSViewController {
 
             captureSession.addOutputWithNoConnections(audioOutput)
             captureSession.addConnection(AVCaptureConnection(inputPorts: [audioPort], output: audioOutput))
-        } else if let audioDevice = audioDevice,
-           let audioInputDevice = try? AVCaptureDeviceInput(device: audioDevice),
-           captureSession.canAddInput(audioInputDevice) {
-            activeAudioDevice = audioDevice
-
-            let audioOutput = AVCaptureAudioPreviewOutput()
-            audioOutput.outputDeviceUniqueID = defaultAudioDeviceUniqueID()
-            audioOutput.volume = 1.0
-            self.audioOutput = audioOutput
-            
-            captureSession.addInputWithNoConnections(audioInputDevice)
-            captureSession.addOutputWithNoConnections(audioOutput)
-            
-            captureSession.addConnection(AVCaptureConnection(inputPorts: audioInputDevice.ports, output: audioOutput))
         } else {
-            self.audioOutput = nil
+            let recommendedAudioDevice: AVCaptureDevice? = {
+                if let audioDevice = audioDevice {
+                    return audioDevice
+                }
+                
+                let audioDiscoverySession = AVCaptureDevice.DiscoverySession(
+                    deviceTypes: [
+                        .builtInMicrophone,
+                        .externalUnknown
+                    ],
+                    mediaType: .audio,
+                    position: .unspecified
+                )
+                
+                let possibleAudioDevices = audioDiscoverySession.devices.filter { $0.localizedName == device.localizedName }
+                
+                if possibleAudioDevices.count == 1 {
+                    return possibleAudioDevices.first
+                } else {
+                    return nil
+                }
+            }()
+            
+            if let recommendedAudioDevice = recommendedAudioDevice,
+               let audioInputDevice = try? AVCaptureDeviceInput(device: recommendedAudioDevice),
+               captureSession.canAddInput(audioInputDevice) {
+                activeAudioDevice = recommendedAudioDevice
+
+                let audioOutput = AVCaptureAudioPreviewOutput()
+                audioOutput.outputDeviceUniqueID = defaultAudioDeviceUniqueID()
+                audioOutput.volume = 1.0
+                self.audioOutput = audioOutput
+                
+                captureSession.addInputWithNoConnections(audioInputDevice)
+                captureSession.addOutputWithNoConnections(audioOutput)
+                
+                captureSession.addConnection(AVCaptureConnection(inputPorts: audioInputDevice.ports, output: audioOutput))
+            } else {
+                self.audioOutput = nil
+            }
         }
         
         captureSession.commitConfiguration()
