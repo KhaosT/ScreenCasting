@@ -9,6 +9,7 @@
 import Cocoa
 import CoreMediaIO
 import AVFoundation
+import IOKit.pwr_mgt
 
 class ViewController: NSViewController {
 
@@ -26,7 +27,9 @@ class ViewController: NSViewController {
     private var isViewVisible = false
 
     private var isElementHidden = false
-        
+
+    private var sleepAssertionID: IOPMAssertionID?
+
     override func viewDidLoad() {
         super.viewDidLoad()
         
@@ -368,6 +371,11 @@ class ViewController: NSViewController {
         self.captureSession?.stopRunning()
         self.captureSession = nil
         activityIndicator.startAnimation(self)
+
+        if let sleepAssertionID = sleepAssertionID {
+            IOPMAssertionRelease(sleepAssertionID)
+            self.sleepAssertionID = nil
+        }
     }
 
     private func showElements() {
@@ -395,6 +403,19 @@ class ViewController: NSViewController {
             captureSession?.stopRunning()
         }
         activeAudioDevice = nil
+
+        if sleepAssertionID == nil {
+            var assertionID = IOPMAssertionID()
+            let res = IOPMAssertionCreateWithName(
+                kIOPMAssertPreventUserIdleDisplaySleep as CFString,
+                IOPMAssertionLevel(kIOPMAssertionLevelOn),
+                "Content Streaming" as CFString,
+                &assertionID
+            )
+            if res == kIOReturnSuccess {
+                sleepAssertionID = assertionID
+            }
+        }
         
         let captureSession = AVCaptureSession()
         activeDevice = device
