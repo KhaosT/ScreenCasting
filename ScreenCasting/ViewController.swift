@@ -536,14 +536,16 @@ extension ViewController {
         dataSize = UInt32(MemoryLayout<CFString?>.size)
         propertyAddress.mSelector = kAudioDevicePropertyDeviceUID
         
-        err = AudioObjectGetPropertyData(
-            deviceID,
-            &propertyAddress,
-            0,
-            nil,
-            &dataSize,
-            &name
-        )
+        err = withUnsafeMutablePointer(to: &name, { name in
+            return AudioObjectGetPropertyData(
+                deviceID,
+                &propertyAddress,
+                0,
+                nil,
+                &dataSize,
+                name
+            )
+        })
         
         guard err == 0 else {
             return nil
